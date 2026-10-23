@@ -36,7 +36,7 @@ start_report() {
     REPORT="$dir/$1-$(date +%Y%m%d-%H%M%S).txt"; : >"$REPORT"; chown "$who" "$REPORT" 2>/dev/null
     exec > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >>"$REPORT")) 2>&1
 }
-end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; sleep 0.3; }
+end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; }
 
 # --- action log: lets undo.sh reverse what this run did (tab-separated lines in $BK/actions.log) ----
 logact() { mkdir -p "$BK"; ( IFS=$'\t'; echo "$*" ) >>"$BK/actions.log"; }

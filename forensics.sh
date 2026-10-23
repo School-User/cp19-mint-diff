@@ -33,7 +33,7 @@ start_report() {
     REPORT="$dir/$1-$(date +%Y%m%d-%H%M%S).txt"; : >"$REPORT"; chown "$who" "$REPORT" 2>/dev/null
     exec > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >>"$REPORT")) 2>&1
 }
-end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; sleep 0.3; }
+end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; }
 SCAN=(/home /root /opt /srv /var/www /tmp /usr/local /mnt /media)
 NOISE='/\.(cache|mozilla|thumbnails|gvfs)/|/\.local/share/(recently-used|gvfs|Trash|zeitgeist|tracker)|/\.config/(dconf|pulse|ibus|Code|chromium|google-chrome)|\.xsession-errors|/\.(dbus|gnupg)/'
 homes() { awk -F: '$3==0 || ($3>=1000 && $3<65000){print $6}' /etc/passwd | sort -u; }

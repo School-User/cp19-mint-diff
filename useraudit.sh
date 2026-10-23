@@ -25,7 +25,7 @@ start_report() {
     REPORT="$dir/$1-$(date +%Y%m%d-%H%M%S).txt"; : >"$REPORT"; chown "$who" "$REPORT" 2>/dev/null
     exec > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >>"$REPORT")) 2>&1
 }
-end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; sleep 0.3; }
+end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; }
 in_list() { local x=$1; shift; local i; for i in "$@"; do [[ $i == "$x" ]] && return 0; done; return 1; }
 
 start_report useraudit

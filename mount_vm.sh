@@ -9,9 +9,9 @@ case "${1:-mount}" in
   mount)
     modprobe nbd max_part=8
     qemu-nbd -c /dev/nbd0 "$VMDK"
-    sleep 1
+    udevadm settle
     partprobe /dev/nbd0
-    sleep 1
+    udevadm settle
     echo "Partition table:"
     fdisk -l /dev/nbd0
     mkdir -p "$MNT"

@@ -129,7 +129,7 @@ FOUND_SUID=()
 while IFS= read -r f; do
     rel="${f#$VM}"
     FOUND_SUID+=("$rel")
-done < <(find "$VM" -perm /4000 -type f 2>/dev/null)
+done < <(find "$VM" \( -path "$VM/proc" -o -path "$VM/sys" -o -path "$VM/dev" -o -path "$VM/run" \) -prune -o -perm /4000 -type f -print 2>/dev/null)
 
 log "Found SUID files:"
 printf '  %s\n' "${FOUND_SUID[@]}" | tee -a "$OUT"

@@ -106,7 +106,7 @@ review_file() {
     while :; do
         a=$(ask "    [r]estore base version / [d]iff in full / [s]kip (default)?")
         case $a in
-            d*) diff --color=always -u --label "base:$path" --label "live:$path" "$base" "$path" | less -R <&4 || true ;;
+            d*) diff --color=always -u --label "base:$path" --label "live:$path" "$base" "$path" | (less -R || cat) ;;
             r*) backup "$path"
                 if [[ -e $path ]]; then cat "$base" >"$path"; else newfile "$path"; install -D -m 644 "$base" "$path"; fi
                 if [[ $path == /etc/ssh/sshd_config ]]; then

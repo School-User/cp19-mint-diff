@@ -1,0 +1,7 @@
+# never publish: scoring binaries/config (contain the Team ID), samples, local notes
+ccs_extracted/
+bin_samples/
+readme_backup/
+STATUS.md
+*.bak
+*.deb

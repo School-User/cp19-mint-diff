@@ -3,6 +3,9 @@
 #   sudo bash audit.sh                 interactive: asks before each fix
 #   sudo DRY_RUN=1 bash audit.sh       report only, change nothing
 #   sudo AUTH_ADMINS="benjamin bob" bash audit.sh   admins allowed by the README
+#   sudo FIX_ONLY="Firewall" bash audit.sh   only fix this category (comma-separated), no prompts,
+#                                             everything else is scanned and reported but left alone
+#   Categories: SSH, Firewall, Services, Packages, "Password policy", vsftpd, SUID, Hardening, Media
 # User accounts are NEVER modified — only reported, with the manual command.
 # Every file edited is first copied to /root/cp-audit-backup-<timestamp>/.
 #
@@ -21,6 +24,7 @@ hdr()  { echo -e "\n${B}== $* ==${N}"; }
 [[ $EUID -eq 0 ]] || { echo -e "${R}Run with sudo.${N}"; exit 1; }
 
 DRY_RUN=${DRY_RUN:-0}
+FIX_ONLY=${FIX_ONLY:-}
 AUTH_ADMINS=${AUTH_ADMINS:-benjamin}
 if ( : </dev/tty ) 2>/dev/null; then exec 4</dev/tty; else exec 4<&0; fi   # prompts survive curl | bash
 BK=/root/cp-audit-backup-$(date +%Y%m%d-%H%M%S)
@@ -60,9 +64,19 @@ keep_users() {
     rm -rf "$d"; return $rc
 }
 
-ask_fix() {  # ask_fix "label" fn [args...]
-    local label=$1 ans=""; shift
+ask_fix() {  # ask_fix "Category" "label" fn [args...]
+    local cat=$1 label=$2 ans=""; shift 2
     if [[ $DRY_RUN == 1 ]]; then warn "[dry-run] would fix: $label"; return; fi
+    if [[ -n $FIX_ONLY ]]; then
+        local match=0 c; IFS=',' read -ra _cats <<<"$FIX_ONLY"
+        for c in "${_cats[@]}"; do [[ ${cat,,} == "$(echo "$c" | xargs | tr A-Z a-z)" ]] && match=1; done
+        if [[ $match == 1 ]]; then
+            if "$@"; then ok "Done ($cat): $label"; else bad "Failed ($cat): $label"; fi
+        else
+            warn "Skipped (FIX_ONLY=$FIX_ONLY excludes $cat): $label"
+        fi
+        return
+    fi
     read -rp "  Fix: $label? [y/N] " ans <&4
     if [[ $ans =~ ^[Yy]$ ]]; then
         if "$@"; then ok "Done: $label"; else bad "Failed: $label"; fi
@@ -144,7 +158,7 @@ if [[ -f /etc/ssh/sshd_config ]]; then
             > /etc/ssh/sshd_config.d/00-cp-hardening.conf
         sshd -t && { systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true; }
     }
-    [[ $ssh_bad == 1 ]] && { ISSUES+=("SSH"); ask_fix "SSH hardening" fix_ssh; }
+    [[ $ssh_bad == 1 ]] && { ISSUES+=("SSH"); ask_fix "SSH" "SSH hardening" fix_ssh; }
 else
     ok "sshd not installed"
 fi
@@ -158,7 +172,7 @@ if ufw status 2>/dev/null | head -1 | grep -qi "inactive"; then
         if in_chroot; then warn "chroot detected: not touching the firewall"; return 1; fi
         ufw default deny incoming && ufw default allow outgoing && ufw --force enable && logact UFW_ENABLED
     }
-    ask_fix "enable UFW (default deny incoming)" fix_ufw
+    ask_fix "Firewall" "enable UFW (default deny incoming)" fix_ufw
 else
     ok "UFW: $(ufw status 2>/dev/null | head -1)"
 fi
@@ -185,8 +199,8 @@ dis_svcs() {
         systemctl is-enabled --quiet "$s" 2>/dev/null || { [[ $en == 1 || $act == 1 ]] && logact SVC "$s" "$en" "$act"; }
     done; return 0
 }
-if ((${#BADSVC[@]})); then ISSUES+=("Services"); ask_fix "disable ${BADSVC[*]}" dis_svcs "${BADSVC[@]}"; fi
-if ((${#OPTSVC[@]})); then ask_fix "also disable optional ${OPTSVC[*]}" dis_svcs "${OPTSVC[@]}"; fi
+if ((${#BADSVC[@]})); then ISSUES+=("Services"); ask_fix "Services" "disable ${BADSVC[*]}" dis_svcs "${BADSVC[@]}"; fi
+if ((${#OPTSVC[@]})); then ask_fix "Services" "also disable optional ${OPTSVC[*]}" dis_svcs "${OPTSVC[@]}"; fi
 ((${#BADSVC[@]}+${#OPTSVC[@]})) || ok "no prohibited services running"
 
 # ============================================================================
@@ -198,7 +212,7 @@ PKGS=(netcat-openbsd netcat-traditional ncat wireshark wireshark-qt wireshark-co
 FOUND=()
 for p in "${PKGS[@]}"; do pkg_installed "$p" && { bad "$p installed"; FOUND+=("$p"); }; done
 rm_pkgs() { keep_users env DEBIAN_FRONTEND=noninteractive apt-get remove -y "$@" && logact PKG "$@"; }   # no --purge
-if ((${#FOUND[@]})); then ISSUES+=("Packages"); ask_fix "remove ${FOUND[*]}" rm_pkgs "${FOUND[@]}"; else ok "none found"; fi
+if ((${#FOUND[@]})); then ISSUES+=("Packages"); ask_fix "Packages" "remove ${FOUND[*]}" rm_pkgs "${FOUND[@]}"; else ok "none found"; fi
 
 # ============================================================================
 hdr "6. PASSWORD POLICY"
@@ -226,7 +240,7 @@ fix_pw() {
         sed -i '/pam_unix\.so/i password requisite pam_pwquality.so retry=3 minlen=10 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' "$cp"
     sed -i -E '/^[^#]*pam_unix\.so/ s/\s+nullok(_secure)?//' "$ca" "$cp"
 }
-((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"
+((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "Password policy" "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"
 warn "login.defs only affects NEW accounts; per-user: chage -M 90 -m 7 -W 14 <user> (skip the auto-login user)"
 
 # ============================================================================
@@ -240,7 +254,7 @@ if [[ -f /etc/vsftpd.conf ]] && pkg_installed vsftpd; then
         set_kv /etc/vsftpd.conf ssl_enable YES =; set_kv /etc/vsftpd.conf anonymous_enable NO =
         set_kv /etc/vsftpd.conf write_enable NO =; systemctl restart vsftpd 2>/dev/null; return 0
     }
-    ((v_bad)) && { ISSUES+=("vsftpd"); ask_fix "harden vsftpd (or just remove it in step 5)" fix_ftp; }
+    ((v_bad)) && { ISSUES+=("vsftpd"); ask_fix "vsftpd" "harden vsftpd (or just remove it in step 5)" fix_ftp; }
 else
     ok "vsftpd not installed"
 fi
@@ -262,7 +276,7 @@ while IFS= read -r f; do
     in_list "$f" "${EXPECT[@]}" || { bad "unexpected SUID: $f"; UNEX+=("$f"); }
 done < <(find / -xdev \( -path /proc -o -path /sys -o -path /snap \) -prune -o -type f -perm -4000 -print 2>/dev/null)
 fix_suid() { local f m; for f in "$@"; do m=$(stat -c %a "$f"); chmod u-s "$f" && logact SUID "$f" "$m" && echo "    cleared $f"; done; }
-if ((${#UNEX[@]})); then ISSUES+=("SUID"); ask_fix "clear SUID on ${#UNEX[@]} file(s)" fix_suid "${UNEX[@]}"; else ok "none unexpected"; fi
+if ((${#UNEX[@]})); then ISSUES+=("SUID"); ask_fix "SUID" "clear SUID on ${#UNEX[@]} file(s)" fix_suid "${UNEX[@]}"; else ok "none unexpected"; fi
 
 # ============================================================================
 hdr "9. SYSTEM HARDENING (sysctl, guest login, updates, file perms)"
@@ -308,7 +322,7 @@ fix_hard() {
     fi
     return 0
 }
-((hard_bad)) && { ISSUES+=("Hardening"); ask_fix "apply sysctl / guest / updates / permissions fixes" fix_hard; }
+((hard_bad)) && { ISSUES+=("Hardening"); ask_fix "Hardening" "apply sysctl / guest / updates / permissions fixes" fix_hard; }
 
 # ============================================================================
 hdr "10. SUDOERS, MEDIA FILES, CRON, LISTENING PORTS"
@@ -325,7 +339,7 @@ if ((${#MEDIA[@]})); then
     warn "media files in home dirs (prohibited if the README says no media):"
     printf '    %s\n' "${MEDIA[@]}"; ISSUES+=("Media")
     del_media() { local f; for f in "$@"; do mkdir -p "$BK/deleted-media$(dirname "$f")"; mv -v -- "$f" "$BK/deleted-media$f" && logact MEDIA "$f"; done; }
-    ask_fix "MOVE these ${#MEDIA[@]} media file(s) into the backup folder (undo.sh can put them back; check README first!)" del_media "${MEDIA[@]}"
+    ask_fix "Media" "MOVE these ${#MEDIA[@]} media file(s) into the backup folder (undo.sh can put them back; check README first!)" del_media "${MEDIA[@]}"
 else ok "no media files"; fi
 
 echo; echo "  Cron jobs (report only):"

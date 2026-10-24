@@ -10,7 +10,7 @@ Scans a live Linux Mint 21 VM for common CyberPatriot misconfigurations and offe
 curl -fsSL https://raw.githubusercontent.com/School-User/cp19-mint-diff/main/setup.sh | sh
 ```
 
-Shows a menu (audit / compare / forensics / users / undo / both), asks for your sudo password itself, runs the tool, and cleans up after. Pick a tool directly with `| sh -s audit`, `| sh -s compare`, `| sh -s forensics`, `| sh -s users`, `| sh -s undo`. Report-only: `curl ... | DRY_RUN=1 sh`. Or run files directly: `sudo bash audit.sh`. Fix just one category, no prompts: `curl ... | FIX_ONLY=Firewall sh -s audit` (categories: SSH, Firewall, Services, Packages, "Password policy", vsftpd, SUID, Hardening, Media — comma-separate for more than one).
+Shows a menu (audit / compare / forensics / users / undo / both), asks for your sudo password itself, runs the tool, and cleans up after. Pick a tool directly with `| sh -s audit`, `| sh -s compare`, `| sh -s forensics`, `| sh -s users`, `| sh -s undo`. Report-only: `curl ... | DRY_RUN=1 sh`. Or run files directly: `sudo bash audit.sh`. Fix just one category, no prompts: `curl ... | FIX_ONLY=Firewall sh -s audit` (categories: SSH, Firewall, Services, Packages, "Password policy", vsftpd, SUID, Hardening, Media — comma-separate for more than one). Apply the preconfigured secure password policy with no detection and no prompt: `curl ... | PW_POLICY=secure sh -s audit`.
 
 | Tool | What it does | Changes things? |
 |---|---|---|

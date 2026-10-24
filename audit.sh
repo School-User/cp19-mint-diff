@@ -6,6 +6,8 @@
 #   sudo FIX_ONLY="Firewall" bash audit.sh   only fix this category (comma-separated), no prompts,
 #                                             everything else is scanned and reported but left alone
 #   Categories: SSH, Firewall, Services, Packages, "Password policy", vsftpd, SUID, Hardening, Media
+#   sudo PW_POLICY=secure bash audit.sh      apply the preconfigured secure password policy (no prompt,
+#                                             no detection): pwquality, 5-try lockout, history, SHA-256
 # User accounts are NEVER modified — only reported, with the manual command.
 # Every file edited is first copied to /root/cp-audit-backup-<timestamp>/.
 #
@@ -25,6 +27,8 @@ hdr()  { echo -e "\n${B}== $* ==${N}"; }
 
 DRY_RUN=${DRY_RUN:-0}
 FIX_ONLY=${FIX_ONLY:-}
+PW_POLICY=${PW_POLICY:-}
+[[ -z $PW_POLICY || $PW_POLICY == secure ]] || { echo -e "${R}PW_POLICY must be empty or 'secure'.${N}"; exit 1; }
 AUTH_ADMINS=${AUTH_ADMINS:-benjamin}
 if ( : </dev/tty ) 2>/dev/null; then exec 4</dev/tty; else exec 4<&0; fi   # prompts survive curl | bash
 
@@ -369,7 +373,14 @@ FL
     for f in "${PW_FILES[@]}"; do if [[ -e $BK$f ]]; then cp -a "$BK$f" "$f"; else [[ $f == */faillock.conf ]] && rm -f "$f"; fi; done
     return 1
 }
-((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "Password policy" "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"
+if [[ $PW_POLICY == secure ]]; then
+    # preconfigured option: apply the secure policy directly, skipping detection and the prompt
+    if [[ $DRY_RUN == 1 ]]; then warn "[dry-run] would apply the secure password policy (PW_POLICY=secure)"
+    elif fix_pw; then ok "Secure password policy applied (PW_POLICY=secure)"
+    else bad "Secure password policy failed (PW_POLICY=secure); original password files restored"; ISSUES+=("Password policy"); fi
+else
+    ((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "Password policy" "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"
+fi
 warn "login.defs only affects NEW accounts; per-user: chage -M 90 -m 7 -W 14 <user> (skip the auto-login user)"
 
 # ============================================================================

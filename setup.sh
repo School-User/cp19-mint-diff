@@ -8,6 +8,7 @@
 #   curl -fsSL <raw_url>/setup.sh | sh -s undo          reverse a previous audit/compare run
 #   curl -fsSL <raw_url>/setup.sh | DRY_RUN=1 sh        report only, change nothing
 #   curl -fsSL <raw_url>/setup.sh | FIX_ONLY=Firewall sh -s audit   only fix one category (see audit.sh)
+#   curl -fsSL <raw_url>/setup.sh | PW_POLICY=secure sh -s audit   apply the preconfigured secure password policy
 # Users are never modified by any of these tools.
 
 REPO="${REPO:-https://raw.githubusercontent.com/School-User/cp19-mint-diff/main}"
@@ -38,7 +39,7 @@ fetch() { curl -fsSL "$REPO/$1" -o "$DEST/$1" || die "could not download $1 from
 SUDO=""; [ "$(id -u)" -ne 0 ] && { command -v sudo >/dev/null 2>&1 || die "run as root or install sudo"; SUDO=sudo; }
 run() {  # run FILE [args...] as root; keep the options the tools understand
     f=$1; shift
-    $SUDO env "DRY_RUN=${DRY_RUN:-0}" "AUTH_ADMINS=${AUTH_ADMINS:-}" "BASE_ROOT=${BASE_ROOT:-}" "FIX_ONLY=${FIX_ONLY:-}" "AUTH_USERS=${AUTH_USERS:-}" "NO_REPORT=${NO_REPORT:-0}" "REPORT_DIR=${REPORT_DIR:-}" bash "$DEST/$f" "$@" </dev/tty
+    $SUDO env "DRY_RUN=${DRY_RUN:-0}" "AUTH_ADMINS=${AUTH_ADMINS:-}" "BASE_ROOT=${BASE_ROOT:-}" "FIX_ONLY=${FIX_ONLY:-}" "PW_POLICY=${PW_POLICY:-}" "AUTH_USERS=${AUTH_USERS:-}" "NO_REPORT=${NO_REPORT:-0}" "REPORT_DIR=${REPORT_DIR:-}" bash "$DEST/$f" "$@" </dev/tty
 }
 
 case $TOOL in

@@ -284,7 +284,14 @@ fix_pw() {
     for f in "${PW_FILES[@]}"; do backup "$f"; done    # before anything below, including the package install
     set_kv "$LD" PASS_MAX_DAYS 90 "   "; set_kv "$LD" PASS_MIN_DAYS 7 "   "; set_kv "$LD" PASS_WARN_AGE 14 "   "
     set_kv "$LD" ENCRYPT_METHOD SHA512 "   "
+    # Check prerequisites BEFORE touching anything. A PAM line that names a missing module makes password
+    # changes (and possibly logins) fail, so install first and refuse to edit PAM if anything is absent.
     keep_users env DEBIAN_FRONTEND=noninteractive apt-get install -y libpam-pwquality expect >/dev/null 2>&1
+    if ! command -v expect >/dev/null || ! find /lib /usr/lib -name pam_pwquality.so -print -quit 2>/dev/null | grep -q . \
+       || ! find /lib /usr/lib -name pam_pwhistory.so -print -quit 2>/dev/null | grep -q .; then
+        bad "cannot apply password policy: pam_pwquality/pam_pwhistory/expect missing and apt could not install them (no changes made)"
+        return 1
+    fi
     # complexity: enforce_for_root deliberately NOT set, so an admin can always recover a locked account
     cat >/etc/security/pwquality.conf <<'PQ'
 minlen = 12

@@ -420,7 +420,11 @@ if [[ -d /etc/lightdm ]]; then
     [[ ${guest,,} == false ]] && ok "guest login disabled" || { bad "guest login allowed (allow-guest=${guest:-default true})"; hard_bad=1; }
 fi
 au=/etc/apt/apt.conf.d/20auto-upgrades
-grep -qs 'Update-Package-Lists "1"' $au && ok "apt auto-update lists on" || { bad "apt periodic update not enabled"; hard_bad=1; }
+if grep -qs 'Update-Package-Lists "1"' $au && grep -qs 'Unattended-Upgrade "1"' $au && dpkg -s unattended-upgrades >/dev/null 2>&1; then
+    ok "automatic updates on (unattended-upgrades installed, lists and upgrades enabled)"
+else
+    bad "automatic updates not fully set (need unattended-upgrades installed + periodic update and unattended upgrade on)"; hard_bad=1
+fi
 perm_bad=()
 chk_perm() {  # file max_mode_octal_other_mask
     [[ -e $1 ]] || return 0
@@ -441,6 +445,8 @@ fix_hard() {
         mkdir -p /etc/lightdm/lightdm.conf.d; newfile /etc/lightdm/lightdm.conf.d/50-no-guest.conf
         printf '[Seat:*]\nallow-guest=false\n' > /etc/lightdm/lightdm.conf.d/50-no-guest.conf
     fi
+    keep_users env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades >/dev/null 2>&1 \
+        || { bad "could not install unattended-upgrades"; return 1; }
     newfile $au
     printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > $au
     if [[ -f /etc/ssh/sshd_config ]] && (( (8#$(stat -c %a /etc/ssh/sshd_config) & 8#022) )); then
@@ -476,6 +482,43 @@ done
 
 echo; echo "  Listening sockets (report only):"
 ss -H -tulnp 2>/dev/null | awk '{printf "    %-5s %-26s %s\n",$1,$5,$7}'
+
+# ============================================================================
+hdr "11. REMOTE LOGIN PER USER (report only)"
+# Can each login account log in over SSH? Uses the effective sshd config (sshd -T) and the account state.
+SSHT=$(sshd -T 2>/dev/null)
+if [[ -z $SSHT ]]; then
+    warn "sshd -T gave no output (sshd not installed or config invalid); remote login cannot be checked"
+else
+    sget() { awk -v k="$1" '$1==k{$1=""; sub(/^ /,""); print; exit}' <<<"$SSHT"; }
+    au=$(sget allowusers); du=$(sget denyusers); ag=$(sget allowgroups); dg=$(sget denygroups)
+    pwauth=$(sget passwordauthentication); rootl=$(sget permitrootlogin)
+    echo "  sshd: passwordauthentication=${pwauth:-?} permitrootlogin=${rootl:-?} allowusers=${au:-any} denyusers=${du:-none} allowgroups=${ag:-any} denygroups=${dg:-none}"
+    while IFS=: read -r u _ uid _ _ _ sh; do
+        [[ $uid == 0 || ( $uid -ge 1000 && $uid -lt 65534 ) ]] || continue
+        why=""
+        case $sh in */nologin|*/false|"") why="no login shell ($sh)" ;; esac
+        st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
+        [[ -z $why && $st == L  ]] && why="account locked"
+        [[ -z $why && $st == NP ]] && why="no password set"
+        [[ -z $why && $uid == 0 && $rootl == no ]] && why="PermitRootLogin no"
+        [[ -z $why && -n $au ]] && ! tr ' ' '\n' <<<"$au" | cut -d@ -f1 | grep -qx "$u" && why="not in AllowUsers"
+        [[ -z $why && -n $du ]] && tr ' ' '\n' <<<"$du" | cut -d@ -f1 | grep -qx "$u" && why="in DenyUsers"
+        if [[ -z $why && -n $ag ]]; then
+            g_ok=0; for g in $(id -Gn "$u"); do tr ' ' '\n' <<<"$ag" | grep -qx "$g" && g_ok=1; done
+            ((g_ok)) || why="no group in AllowGroups"
+        fi
+        if [[ -z $why && -n $dg ]]; then
+            for g in $(id -Gn "$u"); do tr ' ' '\n' <<<"$dg" | grep -qx "$g" && why="member of DenyGroups ($g)"; done
+        fi
+        if [[ -n $why ]]; then
+            ok "$u: remote login blocked ($why)"
+        else
+            via=$([[ $pwauth == no ]] && echo "key only" || echo "password or key")
+            warn "$u: CAN log in remotely over SSH ($via) — check against the README"
+        fi
+    done < /etc/passwd
+fi
 
 # ============================================================================
 hdr "SUMMARY"

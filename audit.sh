@@ -230,10 +230,11 @@ if grep -q 'pam_pwquality\|pam_cracklib' /etc/pam.d/common-password; then ok "pa
 else bad "no password complexity module in common-password"; pw_bad=1; fi
 if grep -qE '^[^#]*pam_unix\.so.*nullok' /etc/pam.d/common-auth /etc/pam.d/common-password 2>/dev/null; then
     bad "nullok present (blank passwords can log in)"; pw_bad=1; fi
+if ! grep -q 'pam_faillock' /etc/pam.d/common-auth; then bad "no account lockout (pam_faillock)"; pw_bad=1; fi
 if ! grep -q 'pam_pwhistory' /etc/pam.d/common-password; then bad "no password history (pam_pwhistory)"; pw_bad=1; fi
 if ! grep -qE '^\s*minlen\s*=\s*1[2-9]' /etc/security/pwquality.conf 2>/dev/null; then bad "pwquality minlen is not 12 or more"; pw_bad=1; fi
 
-PW_FILES=("$LD" /etc/pam.d/common-password /etc/pam.d/common-auth /etc/security/pwquality.conf /etc/security/opasswd)
+PW_FILES=("$LD" /etc/pam.d/common-password /etc/pam.d/common-auth /etc/security/pwquality.conf /etc/security/opasswd /etc/security/faillock.conf)
 
 # Drives the real passwd(1) on a pty as a non-root test user. Returns 0 only if every expectation holds:
 # weak passwords rejected, strong accepted, reuse of a recent password rejected. Test user is always removed.
@@ -275,6 +276,25 @@ EXP
     pw_expect ok     "$old" 'Wintry-Canary-7731!'
     pw_expect reject 'Wintry-Canary-7731!' "$old"
     pw_expect ok     'Wintry-Canary-7731!' 'Lantern-Harbor-4096?'
+    # lockout: real sshd logins with wrong passwords, then the right one must be refused until faillock is reset
+    cat >"$d/ssh.exp" <<'EXP'
+#!/usr/bin/expect -f
+set user [lindex $argv 0]
+set pw [lindex $argv 1]
+set timeout 20
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 $user@127.0.0.1 true
+expect {
+  -re "assword: *" { send -- "$pw\r"; exp_continue }
+  eof
+}
+catch wait result
+exit [lindex $result 3]
+EXP
+    local i
+    for i in 1 2 3 4 5; do expect -f "$d/ssh.exp" "$u" 'WrongPass-0000' >/dev/null 2>&1; done
+    expect -f "$d/ssh.exp" "$u" 'Lantern-Harbor-4096?' >/dev/null 2>&1 && f=1          # must be locked out
+    faillock --user "$u" --reset >/dev/null 2>&1
+    expect -f "$d/ssh.exp" "$u" 'Lantern-Harbor-4096?' >/dev/null 2>&1 || f=1          # must work after reset
     pw_user_cleanup; rm -rf "$d"
     return $f
 }
@@ -283,12 +303,14 @@ fix_pw() {
     local cp=/etc/pam.d/common-password ca=/etc/pam.d/common-auth f
     for f in "${PW_FILES[@]}"; do backup "$f"; done    # before anything below, including the package install
     set_kv "$LD" PASS_MAX_DAYS 90 "   "; set_kv "$LD" PASS_MIN_DAYS 7 "   "; set_kv "$LD" PASS_WARN_AGE 14 "   "
-    set_kv "$LD" ENCRYPT_METHOD SHA512 "   "
+    set_kv "$LD" ENCRYPT_METHOD SHA256 "   "
+    set_kv "$LD" SHA_CRYPT_MIN_ROUNDS 100000 "   "; set_kv "$LD" SHA_CRYPT_MAX_ROUNDS 100000 "   "
     # Check prerequisites BEFORE touching anything. A PAM line that names a missing module makes password
     # changes (and possibly logins) fail, so install first and refuse to edit PAM if anything is absent.
     keep_users env DEBIAN_FRONTEND=noninteractive apt-get install -y libpam-pwquality expect >/dev/null 2>&1
     if ! command -v expect >/dev/null || ! find /lib /usr/lib -name pam_pwquality.so -print -quit 2>/dev/null | grep -q . \
-       || ! find /lib /usr/lib -name pam_pwhistory.so -print -quit 2>/dev/null | grep -q .; then
+       || ! find /lib /usr/lib -name pam_pwhistory.so -print -quit 2>/dev/null | grep -q . \
+       || ! find /lib /usr/lib -name pam_faillock.so -print -quit 2>/dev/null | grep -q .; then
         bad "cannot apply password policy: pam_pwquality/pam_pwhistory/expect missing and apt could not install them (no changes made)"
         return 1
     fi
@@ -312,10 +334,20 @@ PQ
     sed -i '/pam_unix\.so/i password\trequisite\t\t\tpam_pwquality.so retry=3' "$cp"
     sed -i '/pam_unix\.so/i password\trequired\t\t\tpam_pwhistory.so remember=5 use_authtok' "$cp"
     sed -i -E '/^[^#]*pam_unix\.so/ s/\s+nullok(_secure)?//' "$ca" "$cp"
+    sed -i -E '/^[^#]*pam_unix\.so/ s/\syescrypt\b/ sha256 rounds=100000/' "$cp"    # pam_unix sets the hash here, not in login.defs
     touch /etc/security/opasswd && chmod 600 /etc/security/opasswd
+    # lockout: 5 failures in 15 min locks the account for 15 min. root is never locked (no even_deny_root), so an admin can always get in and reset.
+    cat >/etc/security/faillock.conf <<'FL'
+deny = 5
+unlock_time = 900
+fail_interval = 900
+FL
+    sed -i '/pam_faillock/d' "$ca"
+    sed -i '/pam_unix\.so/i auth\trequired\t\t\tpam_faillock.so preauth' "$ca"           # its own line, before pam_unix
+    sed -i '/pam_unix\.so/a auth\t[default=die]\t\t\tpam_faillock.so authfail\nauth\tsufficient\t\t\tpam_faillock.so authsucc' "$ca"
     if keep_users pw_selftest; then ok "password policy self-test passed"; return 0; fi
     warn "password policy self-test FAILED; restoring the original password files"
-    for f in "${PW_FILES[@]}"; do [[ -e $BK$f ]] && cp -a "$BK$f" "$f"; done
+    for f in "${PW_FILES[@]}"; do if [[ -e $BK$f ]]; then cp -a "$BK$f" "$f"; else [[ $f == */faillock.conf ]] && rm -f "$f"; fi; done
     return 1
 }
 ((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "Password policy" "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"

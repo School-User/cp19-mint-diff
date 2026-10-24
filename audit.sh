@@ -439,8 +439,15 @@ chk_perm /etc/ssh/sshd_config 022
 
 fix_hard() {
     local k f=/etc/sysctl.d/99-cp-hardening.conf
-    newfile "$f"; : > "$f"; for k in "${!SYS[@]}"; do echo "$k = ${SYS[$k]}" >> "$f"; done
-    if in_chroot; then warn "chroot detected: not applying sysctl to the running kernel"; else sysctl --system >/dev/null 2>&1; fi
+    # ip_forward must be written first: changing it makes the kernel reset conf/*/accept_redirects,
+    # so the conf/* keys are applied after it, on boot (file order) and now (re-applied below).
+    newfile "$f"; : > "$f"; echo "net.ipv4.ip_forward = ${SYS[net.ipv4.ip_forward]}" >> "$f"
+    for k in "${!SYS[@]}"; do [[ $k == net.ipv4.ip_forward ]] || echo "$k = ${SYS[$k]}" >> "$f"; done
+    if in_chroot; then warn "chroot detected: not applying sysctl to the running kernel"
+    else
+        sysctl --system >/dev/null 2>&1
+        for k in "${!SYS[@]}"; do [[ $k == net.ipv4.conf.* ]] && sysctl -q -w "$k=${SYS[$k]}" >/dev/null 2>&1; done
+    fi
     if [[ -d /etc/lightdm ]] && [[ ${guest,,} != false ]]; then
         mkdir -p /etc/lightdm/lightdm.conf.d; newfile /etc/lightdm/lightdm.conf.d/50-no-guest.conf
         printf '[Seat:*]\nallow-guest=false\n' > /etc/lightdm/lightdm.conf.d/50-no-guest.conf

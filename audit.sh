@@ -45,7 +45,7 @@ start_report() {
     REPORT="$dir/$1-$(date +%Y%m%d-%H%M%S).txt"; : >"$REPORT"; chown "$who" "$REPORT" 2>/dev/null
     exec > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >>"$REPORT")) 2>&1
 }
-end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; }
+end_report() { [[ -n $REPORT ]] && echo "  Report saved: $REPORT"; return 0; }
 
 # --- action log: lets undo.sh reverse what this run did (tab-separated lines in $BK/actions.log) ----
 logact() { mkdir -p "$BK"; ( IFS=$'\t'; echo "$*" ) >>"$BK/actions.log"; }
@@ -499,9 +499,14 @@ else
         why=""
         case $sh in */nologin|*/false|"") why="no login shell ($sh)" ;; esac
         st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
-        [[ -z $why && $st == L  ]] && why="account locked"
-        [[ -z $why && $st == NP ]] && why="no password set"
-        [[ -z $why && $uid == 0 && $rootl == no ]] && why="PermitRootLogin no"
+        # a locked or passwordless root can still log in with a key, so root is judged by PermitRootLogin and keys
+        if [[ $uid == 0 ]]; then
+            if [[ $rootl == no ]]; then why="PermitRootLogin no"
+            elif [[ $rootl != yes && ! -s /root/.ssh/authorized_keys ]]; then why="no root key (PermitRootLogin $rootl)"; fi
+        else
+            [[ -z $why && $st == L  ]] && why="account locked"
+            [[ -z $why && $st == NP ]] && why="no password set"
+        fi
         [[ -z $why && -n $au ]] && ! tr ' ' '\n' <<<"$au" | cut -d@ -f1 | grep -qx "$u" && why="not in AllowUsers"
         [[ -z $why && -n $du ]] && tr ' ' '\n' <<<"$du" | cut -d@ -f1 | grep -qx "$u" && why="in DenyUsers"
         if [[ -z $why && -n $ag ]]; then

@@ -27,6 +27,21 @@ DRY_RUN=${DRY_RUN:-0}
 FIX_ONLY=${FIX_ONLY:-}
 AUTH_ADMINS=${AUTH_ADMINS:-benjamin}
 if ( : </dev/tty ) 2>/dev/null; then exec 4</dev/tty; else exec 4<&0; fi   # prompts survive curl | bash
+
+# --- access gate: the script will not run until the team passphrase is typed. Only a salted SHA-256 crypt
+# hash is stored here, never the passphrase. Set GATE_HASH with:  openssl passwd -5 "<passphrase>"
+GATE_HASH=''
+gate() {
+    [[ -n $GATE_HASH ]] || { echo "error: GATE_HASH is not set in this copy of audit.sh; refusing to run." >&2; exit 1; }
+    local salt pp
+    salt=$(cut -d'$' -f3 <<<"$GATE_HASH")
+    read -rsp "Team passphrase: " pp <&4; echo
+    if [[ $(openssl passwd -5 -salt "$salt" "$pp" 2>/dev/null) != "$GATE_HASH" ]]; then
+        echo "Wrong passphrase." >&2; exit 1
+    fi
+    unset pp
+}
+gate
 BK=/root/cp-audit-backup-$(date +%Y%m%d-%H%M%S)
 ISSUES=()
 
@@ -239,7 +254,8 @@ PW_FILES=("$LD" /etc/pam.d/common-password /etc/pam.d/common-auth /etc/security/
 # Drives the real passwd(1) on a pty as a non-root test user. Returns 0 only if every expectation holds:
 # weak passwords rejected, strong accepted, reuse of a recent password rejected. Test user is always removed.
 pw_selftest() {
-    local u=pwtest-audit old='Old#Passw0rd-2026' d f=0
+    local u=pwtest-audit d f=0 old new1 new2
+    old="Tst#$(openssl rand -hex 6)-Qa"; new1="Wn#$(openssl rand -hex 6)-Zq"; new2="Ln#$(openssl rand -hex 6)-Yb"
     d=$(mktemp -d) || return 1
     cat >"$d/chg.exp" <<'EXP'
 #!/usr/bin/expect -f
@@ -258,7 +274,10 @@ catch wait result
 exit [lindex $result 3]
 EXP
     chmod 700 "$d/chg.exp"
-    pw_user_cleanup() { userdel -r "$u" >/dev/null 2>&1; sed -i "/^$u:/d" /etc/security/opasswd; }
+    pw_user_cleanup() {   # stop anything the test account still runs, then remove it and its fixed-name home
+        pkill -KILL -u "$u" >/dev/null 2>&1; sleep 1
+        userdel -r "$u" >/dev/null 2>&1; rm -rf "/home/$u"; sed -i "/^$u:/d" /etc/security/opasswd
+    }
     pw_chg() { "$d/chg.exp" "$u" "$1" "$2" >/dev/null 2>&1; }
     # a reject only counts if passwd itself refused (exit 1..20); 126/127 mean the helper did not run
     pw_expect() {  # pw_expect ok|reject OLD NEW
@@ -272,10 +291,10 @@ EXP
     pw_expect reject "$old" 'alllowercase1234'
     pw_expect reject "$old" 'Password1234!'
     pw_expect reject "$old" 'Aaaa#bbbb1234'
-    pw_expect reject "$old" 'Old#Passw0rd-2027'
-    pw_expect ok     "$old" 'Wintry-Canary-7731!'
-    pw_expect reject 'Wintry-Canary-7731!' "$old"
-    pw_expect ok     'Wintry-Canary-7731!' 'Lantern-Harbor-4096?'
+    pw_expect reject "$old" "${old%?}b"                 # too similar to the old one
+    pw_expect ok     "$old" "$new1"
+    pw_expect reject "$new1" "$old"                     # reuse within history
+    pw_expect ok     "$new1" "$new2"
     # lockout: real sshd logins with wrong passwords, then the right one must be refused until faillock is reset
     cat >"$d/ssh.exp" <<'EXP'
 #!/usr/bin/expect -f
@@ -292,9 +311,9 @@ exit [lindex $result 3]
 EXP
     local i
     for i in 1 2 3 4 5; do expect -f "$d/ssh.exp" "$u" 'WrongPass-0000' >/dev/null 2>&1; done
-    expect -f "$d/ssh.exp" "$u" 'Lantern-Harbor-4096?' >/dev/null 2>&1 && f=1          # must be locked out
+    expect -f "$d/ssh.exp" "$u" "$new2" >/dev/null 2>&1 && f=1          # must be locked out
     faillock --user "$u" --reset >/dev/null 2>&1
-    expect -f "$d/ssh.exp" "$u" 'Lantern-Harbor-4096?' >/dev/null 2>&1 || f=1          # must work after reset
+    expect -f "$d/ssh.exp" "$u" "$new2" >/dev/null 2>&1 || f=1          # must work after reset
     pw_user_cleanup; rm -rf "$d"
     return $f
 }

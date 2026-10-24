@@ -230,15 +230,86 @@ if grep -q 'pam_pwquality\|pam_cracklib' /etc/pam.d/common-password; then ok "pa
 else bad "no password complexity module in common-password"; pw_bad=1; fi
 if grep -qE '^[^#]*pam_unix\.so.*nullok' /etc/pam.d/common-auth /etc/pam.d/common-password 2>/dev/null; then
     bad "nullok present (blank passwords can log in)"; pw_bad=1; fi
+if ! grep -q 'pam_pwhistory' /etc/pam.d/common-password; then bad "no password history (pam_pwhistory)"; pw_bad=1; fi
+if ! grep -qE '^\s*minlen\s*=\s*1[2-9]' /etc/security/pwquality.conf 2>/dev/null; then bad "pwquality minlen is not 12 or more"; pw_bad=1; fi
+
+PW_FILES=("$LD" /etc/pam.d/common-password /etc/pam.d/common-auth /etc/security/pwquality.conf /etc/security/opasswd)
+
+# Drives the real passwd(1) on a pty as a non-root test user. Returns 0 only if every expectation holds:
+# weak passwords rejected, strong accepted, reuse of a recent password rejected. Test user is always removed.
+pw_selftest() {
+    local u=pwtest-audit old='Old#Passw0rd-2026' d f=0
+    d=$(mktemp -d) || return 1
+    cat >"$d/chg.exp" <<'EXP'
+#!/usr/bin/expect -f
+set user [lindex $argv 0]
+set old [lindex $argv 1]
+set new [lindex $argv 2]
+set timeout 20
+spawn sudo -u $user passwd
+expect {
+  -re "Current password: *" { send -- "$old\r"; exp_continue }
+  -re "New password: *"     { send -- "$new\r"; exp_continue }
+  -re "Retype new password: *" { send -- "$new\r"; exp_continue }
+  eof
+}
+catch wait result
+exit [lindex $result 3]
+EXP
+    chmod 700 "$d/chg.exp"
+    pw_user_cleanup() { userdel -r "$u" >/dev/null 2>&1; sed -i "/^$u:/d" /etc/security/opasswd; }
+    pw_chg() { "$d/chg.exp" "$u" "$1" "$2" >/dev/null 2>&1; }
+    # a reject only counts if passwd itself refused (exit 1..20); 126/127 mean the helper did not run
+    pw_expect() {  # pw_expect ok|reject OLD NEW
+        local rc; pw_chg "$2" "$3"; rc=$?
+        if [[ $1 == ok ]]; then [[ $rc -eq 0 ]] || f=1
+        else [[ $rc -ge 1 && $rc -le 20 ]] || f=1; fi
+    }
+    pw_user_cleanup
+    useradd -m "$u" && chage -m 0 -M 90 "$u" && echo "$u:$old" | chpasswd || { pw_user_cleanup; rm -rf "$d"; return 1; }
+    pw_expect reject "$old" 'short1!'
+    pw_expect reject "$old" 'alllowercase1234'
+    pw_expect reject "$old" 'Password1234!'
+    pw_expect reject "$old" 'Aaaa#bbbb1234'
+    pw_expect reject "$old" 'Old#Passw0rd-2027'
+    pw_expect ok     "$old" 'Wintry-Canary-7731!'
+    pw_expect reject 'Wintry-Canary-7731!' "$old"
+    pw_expect ok     'Wintry-Canary-7731!' 'Lantern-Harbor-4096?'
+    pw_user_cleanup; rm -rf "$d"
+    return $f
+}
 
 fix_pw() {
-    local cp=/etc/pam.d/common-password ca=/etc/pam.d/common-auth
-    backup "$LD"; backup "$cp"; backup "$ca"    # before anything below, including the package install that edits PAM
+    local cp=/etc/pam.d/common-password ca=/etc/pam.d/common-auth f
+    for f in "${PW_FILES[@]}"; do backup "$f"; done    # before anything below, including the package install
     set_kv "$LD" PASS_MAX_DAYS 90 "   "; set_kv "$LD" PASS_MIN_DAYS 7 "   "; set_kv "$LD" PASS_WARN_AGE 14 "   "
-    keep_users env DEBIAN_FRONTEND=noninteractive apt-get install -y libpam-pwquality >/dev/null 2>&1
-    grep -q 'pam_pwquality\|pam_cracklib' "$cp" ||
-        sed -i '/pam_unix\.so/i password requisite pam_pwquality.so retry=3 minlen=10 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' "$cp"
+    set_kv "$LD" ENCRYPT_METHOD SHA512 "   "
+    keep_users env DEBIAN_FRONTEND=noninteractive apt-get install -y libpam-pwquality expect >/dev/null 2>&1
+    # complexity: enforce_for_root deliberately NOT set, so an admin can always recover a locked account
+    cat >/etc/security/pwquality.conf <<'PQ'
+minlen = 12
+dcredit = -1
+ucredit = -1
+lcredit = -1
+ocredit = -1
+minclass = 3
+maxrepeat = 3
+maxsequence = 3
+usercheck = 1
+gecoscheck = 1
+dictcheck = 1
+difok = 5
+retry = 3
+PQ
+    sed -i '/pam_pwquality\|pam_pwhistory/d' "$cp"
+    sed -i '/pam_unix\.so/i password\trequisite\t\t\tpam_pwquality.so retry=3' "$cp"
+    sed -i '/pam_unix\.so/i password\trequired\t\t\tpam_pwhistory.so remember=5 use_authtok' "$cp"
     sed -i -E '/^[^#]*pam_unix\.so/ s/\s+nullok(_secure)?//' "$ca" "$cp"
+    touch /etc/security/opasswd && chmod 600 /etc/security/opasswd
+    if keep_users pw_selftest; then ok "password policy self-test passed"; return 0; fi
+    warn "password policy self-test FAILED; restoring the original password files"
+    for f in "${PW_FILES[@]}"; do [[ -e $BK$f ]] && cp -a "$BK$f" "$f"; done
+    return 1
 }
 ((pw_bad)) && { ISSUES+=("Password policy"); ask_fix "Password policy" "password policy (login.defs, pwquality, nullok)" fix_pw; } || ok "password policy fine"
 warn "login.defs only affects NEW accounts; per-user: chage -M 90 -m 7 -W 14 <user> (skip the auto-login user)"

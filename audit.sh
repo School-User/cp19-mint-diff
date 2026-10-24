@@ -32,20 +32,6 @@ PW_POLICY=${PW_POLICY:-}
 AUTH_ADMINS=${AUTH_ADMINS:-benjamin}
 if ( : </dev/tty ) 2>/dev/null; then exec 4</dev/tty; else exec 4<&0; fi   # prompts survive curl | bash
 
-# --- access gate: the script will not run until the team passphrase is typed. Only a salted SHA-256 crypt
-# hash is stored here, never the passphrase. Set GATE_HASH with:  openssl passwd -5 "<passphrase>"
-GATE_HASH=''
-gate() {
-    [[ -n $GATE_HASH ]] || { echo "error: GATE_HASH is not set in this copy of audit.sh; refusing to run." >&2; exit 1; }
-    local salt pp
-    salt=$(cut -d'$' -f3 <<<"$GATE_HASH")
-    read -rsp "Team passphrase: " pp <&4; echo
-    if [[ $(openssl passwd -5 -salt "$salt" "$pp" 2>/dev/null) != "$GATE_HASH" ]]; then
-        echo "Wrong passphrase." >&2; exit 1
-    fi
-    unset pp
-}
-gate
 BK=/root/cp-audit-backup-$(date +%Y%m%d-%H%M%S)
 ISSUES=()
 
